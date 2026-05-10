@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+spacy>=3.8
+nltk
+networkx
+pydantic
