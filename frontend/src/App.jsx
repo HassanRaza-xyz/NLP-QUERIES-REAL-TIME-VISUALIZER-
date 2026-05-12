@@ -1,38 +1,33 @@
 import { useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import Sidebar from './components/Sidebar';
 import SentenceInput from './components/SentenceInput';
 import DependencyTree from './components/DependencyTree';
 import ConstituencyTree from './components/ConstituencyTree';
 import WordNetGraph from './components/WordNetGraph';
 import VerbNetCard from './components/VerbNetCard';
 import StepParser from './components/StepParser';
-import ParticlesBg from './components/ParticlesBg';
-import ScrollReveal from './components/ScrollReveal';
+import CommonSenseQuiz from './components/CommonSenseQuiz';
 import * as api from './api';
 
-const VIEWS = [
-  { id: 'dependency', label: 'Dependency Tree', icon: '🌳' },
-  { id: 'constituency', label: 'Constituency Tree', icon: '🏗️' },
-  { id: 'pcfg', label: 'PCFG Mode', icon: '📊' },
-  { id: 'wordnet', label: 'WordNet Explorer', icon: '🔗' },
-  { id: 'verbnet', label: 'VerbNet Roles', icon: '🎭' },
-  { id: 'stepper', label: 'Step-by-Step', icon: '👣' },
+const NAV_ITEMS = [
+  { id: 'dependency', label: 'Dependency Tree', icon: '⊞' },
+  { id: 'constituency', label: 'Constituency Tree', icon: '⊟' },
+  { id: 'pcfg', label: 'PCFG Mode', icon: '⊠' },
+  { id: 'wordnet', label: 'WordNet Explorer', icon: '◎' },
+  { id: 'verbnet', label: 'VerbNet Roles', icon: '◉' },
+  { id: 'stepper', label: 'Step-by-Step', icon: '▷' },
 ];
 
 export default function App() {
   const [sentence, setSentence] = useState('');
-  const [activeView, setActiveView] = useState('dependency');
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState({});
-  const [selectedWord, setSelectedWord] = useState(null);
   const [visibleViews, setVisibleViews] = useState(['dependency']);
+  const [showQuiz, setShowQuiz] = useState(false);
 
-  const handleToggleView = (id) => {
-    setVisibleViews((prev) =>
-      prev.includes(id) ? prev.filter((v) => v !== id) : [...prev, id]
-    );
+  const toggleView = (id) => {
+    setVisibleViews(prev => prev.includes(id) ? prev.filter(v => v !== id) : [...prev, id]);
   };
 
   const handleAnalyze = useCallback(async (text) => {
@@ -47,102 +42,134 @@ export default function App() {
       if (visibleViews.includes('pcfg')) promises.pcfg = api.getPCFG(text);
       if (visibleViews.includes('verbnet')) promises.verbnet = api.getVerbNet(text);
       if (visibleViews.includes('stepper')) promises.stepper = api.getStepParse(text);
-
       const keys = Object.keys(promises);
       const responses = await Promise.all(Object.values(promises));
       const res = {};
       keys.forEach((k, i) => (res[k] = responses[i].data));
       setResults(res);
-    } catch (e) {
-      console.error('Analysis failed:', e);
-    }
+    } catch (e) { console.error('Analysis failed:', e); }
     setLoading(false);
   }, [visibleViews]);
 
   const handleWordClick = useCallback(async (word, pos) => {
-    setSelectedWord(word);
     try {
       const resp = await api.getWordNet(word, pos);
-      setResults((prev) => ({ ...prev, wordnet: resp.data }));
+      setResults(prev => ({ ...prev, wordnet: resp.data }));
     } catch (e) { console.error(e); }
   }, []);
 
+  // ── Quiz mode ──
+  if (showQuiz) {
+    return <CommonSenseQuiz onBack={() => setShowQuiz(false)} />;
+  }
+
   return (
-    <div className="flex min-h-screen bg-animated">
-      <ParticlesBg />
-      <Sidebar
-        open={sidebarOpen}
-        onToggle={() => setSidebarOpen(!sidebarOpen)}
-        views={VIEWS}
-        visibleViews={visibleViews}
-        onToggleView={handleToggleView}
-        activeView={activeView}
-        onSetActive={setActiveView}
-      />
+    <div className="flex min-h-screen" style={{ background: '#081425' }}>
+      {/* ═══ Sidebar ═══ */}
+      <aside className={`sidebar sticky top-0 h-screen flex flex-col shrink-0 transition-all duration-200 ${sidebarOpen ? 'w-[240px]' : 'w-[56px]'}`}>
+        {/* Toggle */}
+        <button onClick={() => setSidebarOpen(!sidebarOpen)}
+          className="w-full flex items-center justify-center h-12 border-b border-border hover:bg-surface-2 transition-colors cursor-pointer">
+          <span className="text-text-muted text-sm">{sidebarOpen ? '◂' : '▸'}</span>
+        </button>
 
-      <main className="flex-1 transition-all duration-500">
-        {/* Hero / Input */}
-        <section className="min-h-[50vh] flex flex-col items-center justify-center px-12 pt-24 pb-16">
-          <motion.h1
-            initial={{ opacity: 0, y: -30 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.8 }}
-            className="text-5xl md:text-6xl font-black text-center mb-3 bg-gradient-to-r from-neon-indigo via-neon-cyan to-neon-violet bg-clip-text text-transparent"
-          >
-            NLP Visualizer
-          </motion.h1>
-          <motion.p
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.3, duration: 0.6 }}
-            className="text-slate-400 text-lg mb-12 text-center max-w-xl"
-          >
-            Type any English sentence to explore its syntactic structure, parsing logic & semantic relations
-          </motion.p>
-          <SentenceInput onAnalyze={handleAnalyze} loading={loading} />
-        </section>
+        {/* Brand */}
+        {sidebarOpen && (
+          <div className="px-4 py-4 border-b border-border">
+            <h2 className="text-sm font-semibold text-text">NLP Lab</h2>
+            <p className="text-[11px] text-text-muted mt-0.5">Analysis Dashboard</p>
+          </div>
+        )}
 
-        {/* Results area */}
-        <section className="px-12 pb-32 space-y-12 max-w-7xl mx-auto">
+        {/* Nav */}
+        <div className="flex-1 overflow-y-auto py-2 px-2 space-y-0.5">
+          {sidebarOpen && <p className="text-[10px] uppercase tracking-widest text-text-muted px-2 mb-2 mt-1">Modules</p>}
+          {NAV_ITEMS.map(item => {
+            const active = visibleViews.includes(item.id);
+            return (
+              <button key={item.id} onClick={() => toggleView(item.id)}
+                className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded text-[13px] transition-all duration-150 cursor-pointer
+                  ${active ? 'bg-primary-muted text-primary' : 'text-text-secondary hover:bg-surface-2 hover:text-text'}`}>
+                <span className="text-sm shrink-0 w-5 text-center font-mono">{item.icon}</span>
+                {sidebarOpen && <span>{item.label}</span>}
+                {sidebarOpen && <span className={`ml-auto w-1.5 h-1.5 rounded-full ${active ? 'bg-primary' : 'bg-surface-4'}`} />}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Common Sense Quiz button */}
+        <div className="px-2 py-3 border-t border-border">
+          <button onClick={() => setShowQuiz(true)}
+            className={`w-full flex items-center gap-2.5 px-2.5 py-2.5 rounded text-[13px] btn-secondary cursor-pointer`}>
+            <span className="text-base">🧠</span>
+            {sidebarOpen && <span>Common Sense Quiz</span>}
+          </button>
+        </div>
+
+        {/* Footer */}
+        {sidebarOpen && (
+          <div className="px-4 py-3 border-t border-border text-[10px] text-text-muted">
+            Powered by spaCy · NLTK · D3.js
+          </div>
+        )}
+      </aside>
+
+      {/* ═══ Main Content ═══ */}
+      <main className="flex-1 min-h-screen">
+        {/* Header / Input */}
+        <header className="border-b border-border px-8 py-6">
+          <div className="max-w-4xl">
+            <h1 className="text-2xl font-semibold text-text tracking-tight">NLP Lab</h1>
+            <p className="text-sm text-text-muted mt-1 mb-5">
+              Type any English sentence to explore its syntactic structure, parsing logic & semantic relations
+            </p>
+            <SentenceInput onAnalyze={handleAnalyze} loading={loading} />
+          </div>
+        </header>
+
+        {/* Results */}
+        <section className="px-8 py-8 space-y-6 max-w-6xl">
           <AnimatePresence mode="sync">
             {loading && (
               <motion.div key="loader" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-                className="flex justify-center py-20">
-                <div className="w-12 h-12 border-4 border-neon-indigo/30 border-t-neon-cyan rounded-full animate-spin" />
+                className="flex items-center gap-3 py-16 justify-center">
+                <div className="w-5 h-5 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+                <span className="text-sm text-text-muted">Analyzing...</span>
               </motion.div>
             )}
 
             {!loading && sentence && (
               <>
                 {visibleViews.includes('dependency') && results.parse && (
-                  <ScrollReveal key="dep">
+                  <motion.div key="dep" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
                     <DependencyTree data={results.parse} onWordClick={handleWordClick} />
-                  </ScrollReveal>
+                  </motion.div>
                 )}
                 {visibleViews.includes('constituency') && results.constituency && (
-                  <ScrollReveal key="const">
+                  <motion.div key="const" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
                     <ConstituencyTree data={results.constituency} mode="constituency" />
-                  </ScrollReveal>
+                  </motion.div>
                 )}
                 {visibleViews.includes('pcfg') && results.pcfg && (
-                  <ScrollReveal key="pcfg">
+                  <motion.div key="pcfg" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
                     <ConstituencyTree data={results.pcfg} mode="pcfg" />
-                  </ScrollReveal>
+                  </motion.div>
                 )}
                 {visibleViews.includes('wordnet') && results.wordnet && (
-                  <ScrollReveal key="wn">
+                  <motion.div key="wn" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
                     <WordNetGraph data={results.wordnet} />
-                  </ScrollReveal>
+                  </motion.div>
                 )}
                 {visibleViews.includes('verbnet') && results.verbnet && (
-                  <ScrollReveal key="vn">
+                  <motion.div key="vn" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
                     <VerbNetCard data={results.verbnet} />
-                  </ScrollReveal>
+                  </motion.div>
                 )}
                 {visibleViews.includes('stepper') && results.stepper && (
-                  <ScrollReveal key="step">
+                  <motion.div key="step" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
                     <StepParser data={results.stepper} />
-                  </ScrollReveal>
+                  </motion.div>
                 )}
               </>
             )}

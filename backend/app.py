@@ -1,6 +1,6 @@
 """
 NLP Visualizer & Learning Lab — FastAPI Backend
-Endpoints: /parse, /wordnet, /verbnet, /pcfg, /step-parse
+Endpoints: /parse, /wordnet, /verbnet, /pcfg, /step-parse, /quiz
 """
 
 from fastapi import FastAPI, HTTPException
@@ -34,7 +34,7 @@ except OSError:
     nlp = spacy.load("en_core_web_sm")
 
 # ── FastAPI app ──────────────────────────────────────────────────────
-app = FastAPI(title="NLP Visualizer API", version="1.0.0")
+app = FastAPI(title="NLP Visualizer API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -94,17 +94,12 @@ def parse_sentence(req: SentenceRequest):
 # ══════════════════════════════════════════════════════════════════════
 
 def _build_constituency_tree(doc):
-    """
-    Build an approximate constituency tree from spaCy's dependency parse.
-    Uses noun_chunks and verb phrases to create a more realistic tree.
-    """
     def _subtree_to_dict(label, children):
         return {"label": label, "children": children}
 
     def _leaf(pos, word):
         return {"label": pos, "children": [{"label": word, "children": []}]}
 
-    # Build NP, VP, PP structure from dependency parse
     root_token = None
     for token in doc:
         if token.dep_ == "ROOT":
@@ -115,25 +110,20 @@ def _build_constituency_tree(doc):
         return _subtree_to_dict("S", [_leaf(t.pos_, t.text) for t in doc])
 
     def build_phrase(token):
-        """Recursively build phrase structure from dependency token."""
         children_tokens = sorted(token.children, key=lambda c: c.i)
         left_children = [c for c in children_tokens if c.i < token.i]
         right_children = [c for c in children_tokens if c.i > token.i]
 
         if token.pos_ == "VERB" or token.pos_ == "AUX":
-            # Build VP
             vp_children = []
-            # Add auxiliaries and advmod on the left
             for child in left_children:
                 if child.dep_ in ("aux", "auxpass", "neg", "advmod"):
                     vp_children.append(_leaf(child.pos_, child.text))
                 elif child.dep_ in ("nsubj", "nsubjpass"):
-                    pass  # handled separately
+                    pass
                 else:
                     vp_children.append(build_phrase(child))
-
             vp_children.append(_leaf(token.pos_, token.text))
-
             for child in right_children:
                 if child.dep_ in ("dobj", "attr", "oprd", "acomp"):
                     vp_children.append(build_phrase(child))
@@ -145,7 +135,6 @@ def _build_constituency_tree(doc):
                     vp_children.append(build_phrase(child))
                 else:
                     vp_children.append(build_phrase(child))
-
             return _subtree_to_dict("VP", vp_children)
 
         elif token.pos_ in ("NOUN", "PROPN", "PRON"):
@@ -157,9 +146,7 @@ def _build_constituency_tree(doc):
                     np_children.append(_leaf(child.pos_, child.text))
                 else:
                     np_children.append(build_phrase(child))
-
             np_children.append(_leaf(token.pos_, token.text))
-
             for child in right_children:
                 if child.dep_ == "prep":
                     np_children.append(build_phrase(child))
@@ -169,7 +156,6 @@ def _build_constituency_tree(doc):
                     np_children.append(build_phrase(child))
                 else:
                     np_children.append(build_phrase(child))
-
             return _subtree_to_dict("NP", np_children)
 
         elif token.pos_ == "ADP":
@@ -203,25 +189,21 @@ def _build_constituency_tree(doc):
                 return node_children[0]
             return _subtree_to_dict(token.pos_, node_children)
 
-    # Build the full S tree
     s_children = []
     children_of_root = sorted(root_token.children, key=lambda c: c.i)
     left_of_root = [c for c in children_of_root if c.i < root_token.i]
     right_of_root = [c for c in children_of_root if c.i > root_token.i]
 
-    # Subject (NP)
     for child in left_of_root:
         if child.dep_ in ("nsubj", "nsubjpass"):
             s_children.append(build_phrase(child))
         elif child.dep_ in ("aux", "auxpass", "neg", "advmod"):
-            pass  # will be in VP
+            pass
         else:
             s_children.append(build_phrase(child))
 
-    # Predicate (VP) — includes the root verb
     s_children.append(build_phrase(root_token))
 
-    # Punctuation
     for child in right_of_root:
         if child.dep_ == "punct":
             s_children.append(_leaf("PUNCT", child.text))
@@ -241,17 +223,14 @@ def constituency_parse(req: SentenceRequest):
 # ══════════════════════════════════════════════════════════════════════
 
 def _add_probabilities(tree_dict, depth=0):
-    """Add pseudo-probabilities to tree nodes for PCFG visualization."""
     if not tree_dict.get("children"):
         return tree_dict
 
-    # Generate realistic-looking probabilities
     n = len(tree_dict["children"])
     if n == 0:
         tree_dict["prob"] = 1.0
         return tree_dict
 
-    # Give higher probability to more common structures
     base_probs = {
         "S": 0.85, "NP": 0.78, "VP": 0.82, "PP": 0.65,
         "DET": 0.95, "NOUN": 0.88, "VERB": 0.80, "ADJ": 0.72,
@@ -278,7 +257,7 @@ def pcfg_parse(req: SentenceRequest):
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  /wordnet  —  Synonyms, antonyms, hypernyms, definitions
+#  /wordnet  —  FIXED: Always 2 synonyms, 2 antonyms, 2 hypernyms, 2 hyponyms
 # ══════════════════════════════════════════════════════════════════════
 @app.post("/wordnet")
 def wordnet_lookup(req: WordRequest):
@@ -294,61 +273,69 @@ def wordnet_lookup(req: WordRequest):
     nodes = [{"id": word, "group": "center", "label": word}]
     links = []
     seen = {word}
-    result_synsets = []
 
-    for ss in synsets[:5]:
-        ss_name = ss.name()
-        definition = ss.definition()
-        examples = ss.examples()
+    # Collect ALL across synsets, then pick exactly 2 of each
+    all_synonyms = []
+    all_antonyms = []
+    all_hypernyms = []
+    all_hyponyms = []
 
-        synonyms = []
-        antonyms = []
-
+    for ss in synsets[:8]:
         for lemma in ss.lemmas():
             syn = lemma.name().replace("_", " ")
             if syn.lower() != word and syn not in seen:
-                synonyms.append(syn)
+                all_synonyms.append(syn)
                 seen.add(syn)
-                nodes.append({"id": syn, "group": "synonym", "label": syn})
-                links.append({"source": word, "target": syn, "relation": "synonym"})
-
             for ant in lemma.antonyms():
                 ant_name = ant.name().replace("_", " ")
                 if ant_name not in seen:
-                    antonyms.append(ant_name)
+                    all_antonyms.append(ant_name)
                     seen.add(ant_name)
-                    nodes.append({"id": ant_name, "group": "antonym", "label": ant_name})
-                    links.append({"source": word, "target": ant_name, "relation": "antonym"})
 
-        hypernyms = []
-        for hyp in ss.hypernyms()[:3]:
+        for hyp in ss.hypernyms()[:4]:
             for lemma in hyp.lemmas()[:2]:
                 h = lemma.name().replace("_", " ")
                 if h not in seen:
-                    hypernyms.append(h)
+                    all_hypernyms.append(h)
                     seen.add(h)
-                    nodes.append({"id": h, "group": "hypernym", "label": h})
-                    links.append({"source": word, "target": h, "relation": "hypernym"})
 
-        hyponyms = []
-        for hypo in ss.hyponyms()[:3]:
+        for hypo in ss.hyponyms()[:4]:
             for lemma in hypo.lemmas()[:2]:
                 h = lemma.name().replace("_", " ")
                 if h not in seen:
-                    hyponyms.append(h)
+                    all_hyponyms.append(h)
                     seen.add(h)
-                    nodes.append({"id": h, "group": "hyponym", "label": h})
-                    links.append({"source": word, "target": h, "relation": "hyponym"})
 
+    # Pick exactly 2 of each (or less if not available)
+    picked_syn = all_synonyms[:2]
+    picked_ant = all_antonyms[:2]
+    picked_hyper = all_hypernyms[:2]
+    picked_hypo = all_hyponyms[:2]
+
+    for s in picked_syn:
+        nodes.append({"id": s, "group": "synonym", "label": s})
+        links.append({"source": word, "target": s, "relation": "synonym"})
+    for a in picked_ant:
+        nodes.append({"id": a, "group": "antonym", "label": a})
+        links.append({"source": word, "target": a, "relation": "antonym"})
+    for h in picked_hyper:
+        nodes.append({"id": h, "group": "hypernym", "label": h})
+        links.append({"source": word, "target": h, "relation": "hypernym"})
+    for h in picked_hypo:
+        nodes.append({"id": h, "group": "hyponym", "label": h})
+        links.append({"source": word, "target": h, "relation": "hyponym"})
+
+    result_synsets = []
+    for ss in synsets[:3]:
         result_synsets.append({
-            "name": ss_name,
+            "name": ss.name(),
             "pos": ss.pos(),
-            "definition": definition,
-            "examples": examples,
-            "synonyms": synonyms,
-            "antonyms": antonyms,
-            "hypernyms": hypernyms,
-            "hyponyms": hyponyms,
+            "definition": ss.definition(),
+            "examples": ss.examples(),
+            "synonyms": picked_syn,
+            "antonyms": picked_ant,
+            "hypernyms": picked_hyper,
+            "hyponyms": picked_hypo,
         })
 
     return {
@@ -392,7 +379,6 @@ def verbnet_roles(req: SentenceRequest):
             for child in token.children:
                 role = THEMATIC_MAP.get(child.dep_)
                 if role:
-                    # Get the full span text for the child
                     span_text = " ".join([t.text for t in child.subtree])
                     roles.append({
                         "role": role,
@@ -415,16 +401,11 @@ def verbnet_roles(req: SentenceRequest):
 # ══════════════════════════════════════════════════════════════════════
 @app.post("/step-parse")
 def step_parse(req: SentenceRequest):
-    """
-    Returns step-by-step parsing stages showing how the tree is built
-    incrementally (simulating a bottom-up / top-down approach).
-    """
     doc = nlp(req.sentence)
     tokens = [{"text": t.text, "pos": t.pos_, "dep": t.dep_, "head": t.head.i, "id": t.i} for t in doc]
 
     steps = []
 
-    # Step 1: Tokenization
     steps.append({
         "step": 1,
         "title": "Tokenization",
@@ -433,7 +414,6 @@ def step_parse(req: SentenceRequest):
         "type": "tokens",
     })
 
-    # Step 2: POS Tagging
     steps.append({
         "step": 2,
         "title": "POS Tagging",
@@ -442,7 +422,6 @@ def step_parse(req: SentenceRequest):
         "type": "pos",
     })
 
-    # Step 3: Identify noun chunks
     chunks = [{"text": chunk.text, "label": chunk.label_, "root": chunk.root.text} for chunk in doc.noun_chunks]
     steps.append({
         "step": 3,
@@ -452,7 +431,6 @@ def step_parse(req: SentenceRequest):
         "type": "chunks",
     })
 
-    # Step 4: Dependency attachment
     dep_steps = []
     for token in doc:
         if token.dep_ != "ROOT":
@@ -469,7 +447,6 @@ def step_parse(req: SentenceRequest):
         "type": "deps",
     })
 
-    # Step 5: Build subtrees bottom-up
     subtrees = []
     for token in doc:
         subtree_tokens = [t.text for t in token.subtree]
@@ -487,7 +464,6 @@ def step_parse(req: SentenceRequest):
         "type": "subtrees",
     })
 
-    # Step 6: Final tree
     tree = _build_constituency_tree(doc)
     steps.append({
         "step": 6,
@@ -500,6 +476,198 @@ def step_parse(req: SentenceRequest):
     return {"sentence": req.sentence, "steps": steps, "total_steps": len(steps)}
 
 
+# ══════════════════════════════════════════════════════════════════════
+#  /quiz  —  Sarcastic Common Sense Quiz
+# ══════════════════════════════════════════════════════════════════════
+
+QUIZ_BANK = [
+    {
+        "id": 1, "category": "Logic",
+        "question": "If all roses are flowers and some flowers fade quickly, which is true?",
+        "options": ["All roses fade quickly", "Some roses might fade quickly", "No roses fade", "Roses aren't flowers"],
+        "correct": 1,
+        "roast_correct": "Well well, look who paid attention in kindergarten. 🎉",
+        "roast_wrong": "Sweetie, this is literally baby logic. Are you okay? 😬"
+    },
+    {
+        "id": 2, "category": "Vocabulary",
+        "question": "What does 'ubiquitous' mean?",
+        "options": ["Very rare", "Found everywhere", "Extremely ugly", "Delicious"],
+        "correct": 1,
+        "roast_correct": "Congratulations, you own a dictionary. Slow clap. 👏",
+        "roast_wrong": "Google is free, bestie. FREE. 📱"
+    },
+    {
+        "id": 3, "category": "Common Sense",
+        "question": "Water boils at what temperature (sea level)?",
+        "options": ["50°C", "100°C", "200°C", "It depends on your vibes"],
+        "correct": 1,
+        "roast_correct": "Wow you remember grade 3 science. Your parents must be thrilled. 🔬",
+        "roast_wrong": "I... I can't even. Did you sleep through ALL of school? 😴"
+    },
+    {
+        "id": 4, "category": "Language",
+        "question": "Which sentence is grammatically correct?",
+        "options": ["Him and me went store", "He and I went to the store", "Me and him goed store", "Store went we"],
+        "correct": 1,
+        "roast_correct": "Basic grammar? Check. Nobel Prize in Literature? Not yet. 📝",
+        "roast_wrong": "English isn't that hard... or IS it? For you, apparently yes. 💀"
+    },
+    {
+        "id": 5, "category": "Logic",
+        "question": "If you have 3 apples and take away 2, how many do YOU have?",
+        "options": ["1", "2", "3", "None, I'm on a diet"],
+        "correct": 1,
+        "roast_correct": "Oh look, the trick question didn't trick you. How... adequate. 🍎",
+        "roast_wrong": "You TOOK 2. You HAVE 2. Think about it... slowly... 🐌"
+    },
+    {
+        "id": 6, "category": "Vocabulary",
+        "question": "What is the antonym of 'benevolent'?",
+        "options": ["Kind", "Malevolent", "Benign", "Generous"],
+        "correct": 1,
+        "roast_correct": "Someone's been reading! Or just guessing really well. 🎯",
+        "roast_wrong": "Anti = opposite. Bene = good. Male = bad. Come ON. 🤦"
+    },
+    {
+        "id": 7, "category": "Common Sense",
+        "question": "Which animal is known as 'man's best friend'?",
+        "options": ["Cat", "Dog", "Goldfish", "Mosquito"],
+        "correct": 1,
+        "roast_correct": "Even a toddler knows this. But sure, have your moment. 🐕",
+        "roast_wrong": "I'm genuinely concerned about your childhood. 🏥"
+    },
+    {
+        "id": 8, "category": "Language",
+        "question": "What is a synonym for 'happy'?",
+        "options": ["Sad", "Joyful", "Angry", "Confused"],
+        "correct": 1,
+        "roast_correct": "Wow, synonym mastery! Your NLP skills are... developing. 🌱",
+        "roast_wrong": "You're studying NLP and don't know synonyms? Bold choice. 💀"
+    },
+    {
+        "id": 9, "category": "Logic",
+        "question": "A bat and ball cost $1.10 total. The bat costs $1 more than the ball. How much is the ball?",
+        "options": ["$0.10", "$0.05", "$0.15", "$1.00"],
+        "correct": 1,
+        "roast_correct": "Oh you dodged the classic trap! I'm mildly impressed. 🧠",
+        "roast_wrong": "This is the most famous trick question EVER and you still fell for it. Iconic. 🤡"
+    },
+    {
+        "id": 10, "category": "Vocabulary",
+        "question": "What does 'ephemeral' mean?",
+        "options": ["Lasting forever", "Short-lived", "Very heavy", "Extremely loud"],
+        "correct": 1,
+        "roast_correct": "Like your attention span, ephemeral knowledge sticks sometimes. ⏳",
+        "roast_wrong": "Ephemeral: lasting a very short time. Like your attempt at this quiz. 💨"
+    },
+    {
+        "id": 11, "category": "Common Sense",
+        "question": "How many continents are there?",
+        "options": ["5", "6", "7", "8"],
+        "correct": 2,
+        "roast_correct": "Geography 101 cleared. You're practically Magellan. 🗺️",
+        "roast_wrong": "There are 7. SEVEN. Please look at a map. Any map. 🌍"
+    },
+    {
+        "id": 12, "category": "Language",
+        "question": "What is the plural of 'octopus'?",
+        "options": ["Octopuses", "Octopi", "Octopodes", "All are accepted"],
+        "correct": 3,
+        "roast_correct": "Linguistic flexibility! You might survive in academia. 🐙",
+        "roast_wrong": "Plot twist: all three forms are used. English is chaos. 🎭"
+    },
+]
+
+@app.get("/quiz")
+def get_quiz():
+    """Return a randomized quiz of 8 questions"""
+    questions = random.sample(QUIZ_BANK, min(8, len(QUIZ_BANK)))
+    # Don't send correct answers to client
+    safe_questions = []
+    for q in questions:
+        safe_questions.append({
+            "id": q["id"],
+            "category": q["category"],
+            "question": q["question"],
+            "options": q["options"],
+        })
+    return {"questions": safe_questions, "total": len(safe_questions)}
+
+
+class QuizAnswers(BaseModel):
+    answers: dict  # {question_id: selected_index}
+
+@app.post("/quiz/submit")
+def submit_quiz(req: QuizAnswers):
+    """Grade the quiz and return sarcastic results"""
+    results = []
+    correct_count = 0
+    category_scores = {}
+
+    quiz_map = {q["id"]: q for q in QUIZ_BANK}
+
+    for qid_str, answer in req.answers.items():
+        qid = int(qid_str)
+        q = quiz_map.get(qid)
+        if not q:
+            continue
+
+        is_correct = answer == q["correct"]
+        if is_correct:
+            correct_count += 1
+
+        cat = q["category"]
+        if cat not in category_scores:
+            category_scores[cat] = {"correct": 0, "total": 0}
+        category_scores[cat]["total"] += 1
+        if is_correct:
+            category_scores[cat]["correct"] += 1
+
+        results.append({
+            "id": qid,
+            "correct": is_correct,
+            "correct_answer": q["correct"],
+            "your_answer": answer,
+            "roast": q["roast_correct"] if is_correct else q["roast_wrong"],
+        })
+
+    total = len(results) if results else 1
+    score_pct = round((correct_count / total) * 100)
+
+    # Sarcastic IQ calculation
+    base_iq = 70 + score_pct * 0.8
+    iq = round(base_iq + random.uniform(-5, 5))
+
+    # Sarcastic overall verdict
+    if score_pct >= 90:
+        verdict = "Okay fine, you're not completely hopeless. In fact, you might actually have a functioning brain. Don't let it go to your head. 🧠✨"
+        rank = "Certified Galaxy Brain"
+    elif score_pct >= 70:
+        verdict = "Not bad! You're smarter than a houseplant. Barely. But we'll take it. 🌿"
+        rank = "Above Room Temperature IQ"
+    elif score_pct >= 50:
+        verdict = "Mediocrity at its finest. You're the human equivalent of a participation trophy. 🏆"
+        rank = "Aggressively Average"
+    elif score_pct >= 30:
+        verdict = "Yikes. I've seen better performance from a random number generator. 🎲"
+        rank = "Bless Your Heart"
+    else:
+        verdict = "I... wow. Did you answer with your eyes closed? Actually, that might have given better results. 👀"
+        rank = "Certified Potato"
+
+    return {
+        "results": results,
+        "score": correct_count,
+        "total": total,
+        "percentage": score_pct,
+        "iq": iq,
+        "verdict": verdict,
+        "rank": rank,
+        "category_scores": category_scores,
+    }
+
+
 # ── Health check ─────────────────────────────────────────────────────
 @app.get("/")
 def root():
@@ -508,4 +676,4 @@ def root():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
